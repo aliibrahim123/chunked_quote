@@ -1,0 +1,3 @@
+[workspace]
+members = ["macro", "lib"]
+resolver = "3"

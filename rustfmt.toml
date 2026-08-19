@@ -1,0 +1,6 @@
+
+hard_tabs = true
+fn_params_layout = "Compressed"
+use_field_init_shorthand = true
+use_small_heuristics = "Max"
+chain_width = 80
