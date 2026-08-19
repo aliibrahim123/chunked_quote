@@ -1,15 +1,22 @@
-use std::str::FromStr;
-
 use proc_macro2::{
-	Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree,
-	token_stream::IntoIter,
+	Delimiter, Group, Ident, Punct, Spacing, Span, TokenStream, TokenTree, token_stream::IntoIter,
 };
-use quote::{ToTokens, TokenStreamExt, quote, quote_spanned};
+use quote::{TokenStreamExt, quote, quote_spanned};
 
 #[proc_macro]
 pub fn chunk(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 	let input = TokenStream::from(input).into_iter();
-	todo!()
+	let mut result = TokenStream::new();
+	chunk_impl(input, &mut result, false);
+	result.into()
+}
+
+#[proc_macro]
+pub fn chunk_spanned(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+	let input = TokenStream::from(input).into_iter();
+	let mut result = TokenStream::new();
+	chunk_impl(input, &mut result, true);
+	result.into()
 }
 
 fn chunk_impl(mut input: IntoIter, result: &mut TokenStream, spanned: bool) {
@@ -42,7 +49,7 @@ fn chunk_impl(mut input: IntoIter, result: &mut TokenStream, spanned: bool) {
 		quote! { ::chunked_quote::__private::Span::call_site() }
 	};
 	let stream = quote_stream(input, &stream_ident, Span::call_site());
-	result.extend(quote! { { let __span = #span; #stream #stream_ident } });
+	result.extend(quote! { #[allow(unused_braces)] { let __span = #span; #stream #stream_ident } });
 }
 
 fn emit_punct(punct: &Punct, stream_ident: &Ident, result: &mut TokenStream) {
@@ -75,7 +82,8 @@ fn quote_stream(mut stream: IntoIter, stream_ident: &Ident, end_span: Span) -> T
 			TokenTree::Literal(lit) => {
 				let lit = lit.to_string();
 				result.extend(quote! {
-					let mut __lit = ::chunked_quote::__private::Literal::from_str(#lit).unwrap();
+					let mut __lit = <::chunked_quote::__private::Literal as ::core::str::FromStr>
+						::from_str(#lit).unwrap();
 					__lit.set_span(__span);
 					#stream_ident.extend(Some(__lit));
 				})
@@ -142,6 +150,33 @@ fn eat_expr_and_block(
 	None
 }
 
+fn handle_match(
+	stream: &mut IntoIter, stream_ident: &Ident, match_span: Span, end_span: Span,
+	result: &mut TokenStream,
+) {
+	let Some((expr, block)) = eat_expr_and_block(stream, result, end_span) else {
+		return;
+	};
+	let mut stream = block.stream().into_iter();
+	let mut arms = TokenStream::new();
+	let mut pat = Vec::new();
+	while let Some(token) = stream.next() {
+		if let TokenTree::Group(group) = &token
+			&& group.delimiter() == Delimiter::Brace
+		{
+			let stream = quote_stream(group.stream().into_iter(), stream_ident, group.span_close());
+			arms.extend(pat);
+			arms.extend(Some(Group::new(Delimiter::Brace, stream)));
+			pat = Vec::new();
+		} else {
+			pat.push(token);
+		}
+	}
+	arms.extend(pat);
+	let match_ident = Ident::new("match", match_span);
+	result.extend(quote! { #match_ident #(#expr)* { #arms }; });
+}
+
 fn handle_directive(
 	stream: &mut IntoIter, stream_ident: &Ident, end_span: Span, result: &mut TokenStream,
 ) {
@@ -150,7 +185,7 @@ fn handle_directive(
 			emit_punct(&punct, stream_ident, result)
 		}
 		Some(TokenTree::Ident(ident)) => match &*ident.to_string() {
-			"if" | "else" | "for" | "match" | "loop" => {
+			"if" | "else" | "for" | "while" | "loop" => {
 				let Some((expr, block)) = eat_expr_and_block(stream, result, end_span) else {
 					return;
 				};
@@ -158,15 +193,14 @@ fn handle_directive(
 					quote_stream(block.stream().into_iter(), stream_ident, block.span_close());
 				result.extend(quote! { #ident #(#expr)* { #stream } })
 			}
+			"match" => handle_match(stream, stream_ident, ident.span(), end_span, result),
 			"do" => {
 				let group = match stream.next() {
 					Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Brace => group,
 					Some(token) => return error(result, token.span(), "expected `{`"),
 					_ => return error(result, end_span, "expected `{`"),
 				};
-				let stream =
-					quote_stream(group.stream().into_iter(), stream_ident, group.span_close());
-				result.extend(quote! { #stream })
+				result.extend(quote! {{ let #stream_ident = &mut #stream_ident; #group }});
 			}
 			_ => result.extend(quote! {
 				::chunked_quote::__private::ToTokens::to_tokens(&#ident, &mut #stream_ident);
