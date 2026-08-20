@@ -16,7 +16,7 @@ use quote::{TokenStreamExt, quote, quote_spanned};
 /// - `##`: append a `#`.
 /// - `#op expr #{tokens}`: append `tokens` based on the evaluation of `op expr`. `op` can be `if`, `for`, `while`, `else`, `match`.
 /// - `#do {expr}`: execute `expr` at its difinition point in the strucutre.
-/// - other tokens gets
+/// - other tokens gets appended.
 ///
 /// # example
 /// ```
