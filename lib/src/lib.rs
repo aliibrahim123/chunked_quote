@@ -4,7 +4,7 @@
 //!
 //! it support all [`quote`] features except `macro_rules` inspired repetetion, and add additional features like control flow and do blocks.
 
-pub use chunked_quote_impl::{chunk, chunk_spanned};
+pub use chunked_quote_impl::{chunk, chunk_spanned, quote, quote_spanned};
 
 #[doc(hidden)]
 pub mod __private {

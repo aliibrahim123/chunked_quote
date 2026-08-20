@@ -2,7 +2,7 @@ use proc_macro2::{
 	Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree,
 	token_stream::IntoIter,
 };
-use quote::{TokenStreamExt, quote, quote_spanned};
+use quote::{TokenStreamExt, quote as oquote, quote_spanned as oquote_spanned};
 
 /// append to [`TokenStream`] code generating the input tokens.
 ///
@@ -46,7 +46,7 @@ use quote::{TokenStreamExt, quote, quote_spanned};
 /// ```
 #[proc_macro]
 pub fn chunk(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-	chunk_impl(TokenStream::from(input), false).into()
+	chunk_impl(TokenStream::from(input), true, false).into()
 }
 
 /// [`chunk`] but with specified span for all tokens not interpolated.
@@ -54,7 +54,21 @@ pub fn chunk(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// **syntax:** `chunk_spanned!(stream: ident, span: expr, ...)`
 #[proc_macro]
 pub fn chunk_spanned(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-	chunk_impl(TokenStream::from(input), true).into()
+	chunk_impl(TokenStream::from(input), true, true).into()
+}
+
+/// create a [`TokenStream`] from the input tokens.
+#[proc_macro]
+pub fn quote(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+	chunk_impl(TokenStream::from(input), false, false).into()
+}
+
+/// [`quote!`] but with specified span for all tokens not interpolated.
+///
+/// **syntax:** `chunk_spanned!(span: expr, ...)`
+#[proc_macro]
+pub fn quote_spanned(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+	chunk_impl(TokenStream::from(input), false, true).into()
 }
 
 struct Cursor {
@@ -92,7 +106,7 @@ impl Cursor {
 	fn expected(&mut self, expected: &str, span: Option<Span>) {
 		let span = span.unwrap_or(self.end_span);
 		let msg = &format!("expected {expected}");
-		self.res.extend(quote_spanned! { span => ::core::compile_error!(#msg); });
+		self.res.extend(oquote_spanned! { span => ::core::compile_error!(#msg); });
 	}
 	fn eat_ident(&mut self) -> Option<Ident> {
 		match self.next() {
@@ -138,13 +152,19 @@ fn is_punct(token: &TokenTree, char: char) -> bool {
 	matches!(token, TokenTree::Punct(punct) if punct.as_char() == char)
 }
 
-fn chunk_impl(input: TokenStream, spanned: bool) -> TokenStream {
+fn chunk_impl(input: TokenStream, chunked: bool, spanned: bool) -> TokenStream {
 	let mut cur = Cursor::new(input, Span::call_site());
 
-	let Some(stream_ident) = cur.eat_ident() else { return cur.res };
-	if !cur.eat_punct(',') {
-		return cur.res;
-	}
+	let stream_ident = if chunked {
+		let Some(stream_ident) = cur.eat_ident() else { return cur.res };
+		if !cur.eat_punct(',') {
+			return cur.res;
+		};
+		stream_ident
+	} else {
+		cur.add(oquote! { let mut __stream = TokenStream::new(); });
+		Ident::new("__stream", Span::call_site())
+	};
 
 	if spanned {
 		let Some(span) = cur.eat_until("an expression", |t| is_punct(t, ',')) else {
@@ -153,24 +173,27 @@ fn chunk_impl(input: TokenStream, spanned: bool) -> TokenStream {
 		if !cur.eat_punct(',') {
 			return cur.res;
 		}
-		cur.add(quote! { let __span = #span; });
+		cur.add(oquote! { let __span = #span; });
 	} else {
-		cur.add(quote! { let __span = ::chunked_quote::__private::Span::call_site(); })
+		cur.add(oquote! { let __span = ::chunked_quote::__private::Span::call_site(); })
 	}
 
 	quote_stream(&mut cur, &stream_ident);
+	if !chunked {
+		cur.add(Some(stream_ident));
+	}
 	let res = cur.res;
-	quote! { { #[allow(unused_braces)] let _ = { #res }; } }
+	oquote! { { #res } }
 }
 
 fn quote_punct(cur: &mut Cursor, punct: &Punct, stream_ident: &Ident) {
 	let spacing = match punct.spacing() {
-		Spacing::Joint => quote! { ::chunked_quote::__private::Spacing::Joint },
-		Spacing::Alone => quote! { ::chunked_quote::__private::Spacing::Alone },
+		Spacing::Joint => oquote! { ::chunked_quote::__private::Spacing::Joint },
+		Spacing::Alone => oquote! { ::chunked_quote::__private::Spacing::Alone },
 	};
-	let ch = punct.as_char();
-	cur.add(quote! {{
-		let mut __punct = ::chunked_quote::__private::Punct::new(#ch, #spacing);
+	let char = punct.as_char();
+	cur.add(oquote! {{
+		let mut __punct = ::chunked_quote::__private::Punct::new(#char, #spacing);
 		__punct.set_span(__span);
 		#stream_ident.extend(Some(__punct));
 	}});
@@ -179,10 +202,10 @@ fn quote_punct(cur: &mut Cursor, punct: &Punct, stream_ident: &Ident) {
 fn quote_ident(cur: &mut Cursor, ident: &Ident, stream_ident: &Ident) {
 	let name = ident.to_string();
 	match name.strip_prefix("r#") {
-		Some(name) => cur.add(quote! {
+		Some(name) => cur.add(oquote! {
 			#stream_ident.extend(Some(::chunked_quote::__private::Ident::new_raw(#name, __span)));
 		}),
-		None => cur.add(quote! {
+		None => cur.add(oquote! {
 			#stream_ident.extend(Some(::chunked_quote::__private::Ident::new(#name, __span)));
 		}),
 	}
@@ -190,7 +213,7 @@ fn quote_ident(cur: &mut Cursor, ident: &Ident, stream_ident: &Ident) {
 
 fn quote_literal(cur: &mut Cursor, lit: &Literal, stream_ident: &Ident) {
 	let text = lit.to_string();
-	cur.add(quote! {{
+	cur.add(oquote! {{
 		let mut __lit = <::chunked_quote::__private::Literal as ::core::str::FromStr>
 			::from_str(#text).unwrap();
 		__lit.set_span(__span);
@@ -200,15 +223,15 @@ fn quote_literal(cur: &mut Cursor, lit: &Literal, stream_ident: &Ident) {
 
 fn quote_group(cur: &mut Cursor, group: &Group, stream_ident: &Ident) {
 	let delimiter = match group.delimiter() {
-		Delimiter::Parenthesis => quote! { ::chunked_quote::__private::Delimiter::Parenthesis },
-		Delimiter::Brace => quote! { ::chunked_quote::__private::Delimiter::Brace },
-		Delimiter::Bracket => quote! { ::chunked_quote::__private::Delimiter::Bracket },
-		Delimiter::None => quote! { ::chunked_quote::__private::Delimiter::None },
+		Delimiter::Parenthesis => oquote! { ::chunked_quote::__private::Delimiter::Parenthesis },
+		Delimiter::Brace => oquote! { ::chunked_quote::__private::Delimiter::Brace },
+		Delimiter::Bracket => oquote! { ::chunked_quote::__private::Delimiter::Bracket },
+		Delimiter::None => oquote! { ::chunked_quote::__private::Delimiter::None },
 	};
 	let mut inner_cur = Cursor::new(group.stream(), group.span_close());
 	quote_stream(&mut inner_cur, stream_ident);
 	let inner = inner_cur.res;
-	cur.add(quote! { #stream_ident.extend(Some({
+	cur.add(oquote! { #stream_ident.extend(Some({
 		let mut #stream_ident = ::chunked_quote::__private::TokenStream::new();
 		#inner
 		let mut __group = ::chunked_quote::__private::Group::new(#delimiter, #stream_ident);
@@ -272,9 +295,11 @@ fn handle_match(cur: &mut Cursor, ident: Ident, stream_ident: &Ident) -> Option<
 fn handle_directive(cur: &mut Cursor, stream_ident: &Ident) -> Option<()> {
 	match cur.next() {
 		Some(TokenTree::Punct(p)) if p.as_char() == '#' => quote_punct(cur, &p, stream_ident),
-		Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Brace => cur.add(quote! {
-			::chunked_quote::__private::ToTokens::to_tokens(&#group, &mut #stream_ident);
-		}),
+		Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Brace => {
+			cur.add(oquote! {
+				::chunked_quote::__private::ToTokens::to_tokens(&#group, &mut #stream_ident);
+			})
+		}
 		Some(TokenTree::Ident(ident)) => match &*ident.to_string() {
 			"if" | "for" | "while" => kw_expr_body(cur, ident, stream_ident)?,
 			"else" => {
@@ -287,10 +312,12 @@ fn handle_directive(cur: &mut Cursor, stream_ident: &Ident) -> Option<()> {
 			}
 			"do" => {
 				let block = cur.eat_brace()?;
-				cur.add(quote! {{ let #stream_ident = &mut #stream_ident; #block }})
+				cur.add(
+					oquote! {{ let #stream_ident = &mut #stream_ident; #[allow(unused_braces)] #block }},
+				)
 			}
 			"match" => handle_match(cur, ident, stream_ident)?,
-			_ => cur.add(quote! {
+			_ => cur.add(oquote! {
 				::chunked_quote::__private::ToTokens::to_tokens(&#ident, &mut #stream_ident);
 			}),
 		},
