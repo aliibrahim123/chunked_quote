@@ -160,7 +160,7 @@ fn chunk_impl(input: TokenStream, spanned: bool) -> TokenStream {
 
 	quote_stream(&mut cur, &stream_ident);
 	let res = cur.res;
-	quote! { #[allow(unused_braces)] { #res } }
+	quote! { { #[allow(unused_braces)] let _ = { #res }; } }
 }
 
 fn quote_punct(cur: &mut Cursor, punct: &Punct, stream_ident: &Ident) {
