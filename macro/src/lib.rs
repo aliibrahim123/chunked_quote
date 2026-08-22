@@ -162,7 +162,7 @@ fn chunk_impl(input: TokenStream, chunked: bool, spanned: bool) -> TokenStream {
 		};
 		stream_ident
 	} else {
-		cur.add(oquote! { let mut __stream = TokenStream::new(); });
+		cur.add(oquote! { let mut __stream = ::chunked_quote::__private::TokenStream::new(); });
 		Ident::new("__stream", Span::call_site())
 	};
 
